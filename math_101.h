@@ -3,9 +3,6 @@
 #include <stdint.h>
 #include <string.h>
 
-float min(float a, float b) { return a < b ? a : b; }
-float max(float a, float b) { return a > b ? a : b; }
-
 struct v2
 {
 	v2() { }
@@ -29,6 +26,13 @@ float len(v2 v) { return sqrtf(dot(v, v)); }
 float len_squared(v2 v) { return dot(v, v); }
 v2 norm(v2 v) { float l = len(v); return v * (1.0f / l); }
 v2 skew(v2 v) { return v2(-v.y, v.x); }
+
+int min(int a, int b) { return a < b ? a : b; }
+int max(int a, int b) { return a > b ? a : b; }
+float min(float a, float b) { return a < b ? a : b; }
+float max(float a, float b) { return a > b ? a : b; }
+float abs(float a) { return a < 0 ? -a : a; }
+v2 abs(v2 a) { return v2(abs(a.x), abs(a.y)); }
 
 float shortest_arc(v2 a, v2 b)
 {
@@ -69,6 +73,8 @@ struct halfspace
 };
 
 float distance(halfspace h, v2 p) { return dot(h.n, p) - h.c; }
+v2 intersect(v2 a, v2 b, float da, float db) { return a + (b - a) * (da / (da - db)); }
+v2 intersect(halfspace h, v2 a, v2 b) { return intersect(a, b, distance(h, a), distance(h, b)); }
 
 v2 bezier(v2 a, v2 b, v2 c, float t)
 {
@@ -162,6 +168,16 @@ struct polygon
 		}
 	}
 };
+
+bool point_in_poly(polygon poly, v2 p)
+{
+	for (int i = 0; i < poly.count; ++i) {
+		float c = dot(poly.norms[i], poly.verts[i]);
+		float dist = dot(poly.norms[i], p) - c;
+		if (dist >= 0) return false;
+	}
+	return true;
+}
 
 struct raycast_output
 {
@@ -298,6 +314,184 @@ int convex_hull(v2* verts, int count)
 	for (int i = 0; i < j; ++i) hull_verts[i] = verts[hull[i]];
 	memcpy(verts, hull_verts, sizeof(v2) * j);
 	return j;
+}
+
+struct collision_data
+{
+	bool hit = false;
+	v2 hit_spot;
+	float depth;
+	v2 normal;
+};
+
+collision_data circle_to_circle(circle circ_a, circle circ_b)
+{
+	collision_data out;
+	v2 d = circ_b.p - circ_a.p;
+	float d2 = dot(d, d);
+	float r = circ_a.r + circ_b.r;
+	if (d2 < r * r) {
+		float l = len(d);
+		d = l == 0 ? v2(0, 1) : d * (1.0f / l);
+		out.hit = true;
+		out.hit_spot = circ_b.p - d * circ_b.r;
+		out.depth = r - l;
+		out.normal = d;
+	}
+	return out;
+}
+
+collision_data aabb_to_aabb(aabb a, aabb b)
+{
+	collision_data out;
+	v2 mid_a = (a.min + a.max) * 0.5f;
+	v2 mid_b = (b.min + b.max) * 0.5f;
+	v2 ea = abs((a.max - a.min) * 0.5f);
+	v2 eb = abs((b.max - b.min) * 0.5f);
+	v2 d = mid_b - mid_a;
+
+	// calc overlap on x and y axes
+	float dx = ea.x + eb.x - abs(d.x);
+	if (dx < 0) return out;
+	float dy = ea.y + eb.y - abs(d.y);
+	if (dy < 0) return out;
+
+	v2 n;
+	float depth;
+	v2 p;
+
+	if (dx < dy) {
+		// x axis overlap is smaller
+		depth = dx;
+		if (d.x < 0) {
+			n = v2(-1.0f, 0);
+			p = mid_a - v2(ea.x, 0);
+		} else {
+			n = v2(1.0f, 0);
+			p = mid_a + v2(ea.x, 0);
+		}
+	}  else {
+		// y axis overlap is smaller
+		depth = dy;
+		if (d.y < 0) {
+			n = v2(0, -1.0f);
+			p = mid_a - v2(0, ea.y);
+		} else {
+			n = v2(0, 1.0f);
+			p = mid_a + v2(0, ea.y);
+		}
+	}
+
+	out.hit = true;
+	out.hit_spot = p;
+	out.depth = depth;
+	out.normal = n;
+	return out;
+}
+
+float clamp(float v, float lo, float hi) { return min(max(v, lo), hi); }
+v2 clamp(v2 v, v2 lo, v2 hi) { return v2(clamp(v.x, lo.x, hi.x), clamp(v.y, lo.y, hi.y)); }
+
+collision_data circle_to_aabb(circle a, aabb b)
+{
+	collision_data out;
+	v2 L = clamp(a.p, b.min, b.max);
+	v2 ab = a.p - L;
+	float d2 = dot(ab, ab);
+	float r2 = a.r * a.r;
+
+	if (d2 < r2) {
+		if (d2 != 0) {
+			// shallow (center of circle not inside of AABB)
+			float d = sqrtf(d2);
+			v2 n = norm(ab);
+			out.hit = true;
+			out.depth = a.r - d;
+			out.hit_spot = a.p + n * d;
+			out.normal = n;
+		} else {
+			// deep (center of circle inside of AABB)
+			// clamp circle's center to edge of AABB, then form the manifold
+			v2 mid = (b.min + b.max) * 0.5f;
+			v2 e = (b.max - b.min) * 0.5f;
+			v2 d = a.p - mid;
+			v2 abs_d = abs(d);
+
+			float x_overlap = e.x - abs_d.x;
+			float y_overlap = e.y - abs_d.y;
+
+			float depth;
+			v2 n;
+
+			if (x_overlap < y_overlap) {
+				depth = x_overlap;
+				n = v2(1.0f, 0);
+				n *= (d.x < 0 ? 1.0f : -1.0f);
+			} else {
+				depth = y_overlap;
+				n = v2(0, 1.0f);
+				n *= (d.y < 0 ? 1.0f : -1.0f);
+			}
+
+			out.hit = true;
+			out.depth = a.r + depth;
+			out.hit_spot = a.p - n * depth;
+			out.normal = n;
+		}
+	}
+
+	return out;
+}
+
+struct sutherland_hodgman_output
+{
+	polygon front;
+	polygon back;
+};
+
+bool in_front(float distance, float epsilon) { return distance > epsilon; }
+bool behind(float distance, float epsilon) { return distance < -epsilon; }
+bool on(float distance, float epsilon) { return !in_front(distance, epsilon) && !behind(distance, epsilon); }
+
+// See: https://gamedevelopment.tutsplus.com/tutorials/how-to-dynamically-slice-a-convex-shape--gamedev-14479
+sutherland_hodgman_output sutherland_hodgman(halfspace split, polygon in, const float k_epsilon = 1.e-4f)
+{
+	sutherland_hodgman_output out;
+	v2 a = in.verts[in.count - 1];
+	float da = distance(split, a);
+
+	for(int i = 0; i < in.count; ++i) {
+		v2 b = in.verts[i];
+		float db = distance(split, b);
+
+		if(in_front(db, k_epsilon)) {
+			if(behind(da, k_epsilon)) {
+				v2 i = intersect(b, a, db, da);
+				out.front.verts[out.front.count++] = i;
+				out.back.verts[out.back.count++] = i;
+			}
+			out.front.verts[out.front.count++] = b;
+		} else if(behind(db, k_epsilon)) {
+			if(in_front(da, k_epsilon)) {
+				v2 i = intersect(a, b, da, db);
+				out.front.verts[out.front.count++] = i;
+				out.back.verts[out.back.count++] = i;
+			} else if(on(da, k_epsilon)) {
+				out.back.verts[out.back.count++] = a;
+			}
+			out.back.verts[out.back.count++] = b;
+		} else {
+			out.front.verts[out.front.count++] = b;
+			if(on(da, k_epsilon)) {
+				out.back.verts[out.back.count++] = b;
+			}
+		}
+
+		a = b;
+		da = db;
+	}
+
+	return out;
 }
 
 /*

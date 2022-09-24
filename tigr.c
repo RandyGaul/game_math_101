@@ -2219,7 +2219,7 @@ LRESULT CALLBACK tigrWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
                 }
                 int repeating = (HIWORD(lParam) & KF_REPEAT) == KF_REPEAT;
                 if (!repeating) {
-                    win->lastChar = wParam;
+                    win->lastChar = (int)wParam;
                 }
             }
             return DefWindowProcW(hWnd, message, wParam, lParam);
@@ -2617,30 +2617,6 @@ int tigrReadChar(Tigr* bmp) {
     return c;
 }
 
-// We supply our own WinMain and just chain through to the user's
-// real entry point.
-#ifdef UNICODE
-int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow)
-#else
-int CALLBACK WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
-#endif
-{
-    int n, argc;
-    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    char** argv = (char**)calloc(argc + 1, sizeof(int));
-
-    (void)hInstance;
-    (void)hPrevInstance;
-    (void)lpCmdLine;
-    (void)nCmdShow;
-
-    for (n = 0; n < argc; n++) {
-        int len = WideCharToMultiByte(CP_UTF8, 0, wargv[n], -1, 0, 0, NULL, NULL);
-        argv[n] = (char*)malloc(len);
-        WideCharToMultiByte(CP_UTF8, 0, wargv[n], -1, argv[n], len, NULL, NULL);
-    }
-    return main(argc, argv);
-}
 #endif
 
 //////// End of inlined file: tigr_win.c ////////
@@ -6241,7 +6217,7 @@ void* tigrReadFile(const char* fileName, int* length) {
     fclose(file);
 
     if (length)
-        *length = len;
+        *length = (int)len;
 
     return data;
 }
