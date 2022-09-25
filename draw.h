@@ -82,8 +82,8 @@ void draw_vector(v2 p, v2 v, TPixel color)
 	draw_line(p, p + v, color);
 }
 
-TPixel color_white() { return tigrRGB(0xFF, 0xFF, 0xFF); }
-TPixel color_black() { return tigrRGB(0, 0, 0); }
-TPixel color_red() { return tigrRGB(0xFF, 0, 0); }
-TPixel color_green() { return tigrRGB(0, 0xFF, 0); }
-TPixel color_blue() { return tigrRGB(0, 0, 0xFF); }
+TPixel color_white(int alpha = 0xFF) { return tigrRGBA(0xFF, 0xFF, 0xFF, alpha); }
+TPixel color_black(int alpha = 0xFF) { return tigrRGBA(0, 0, 0, alpha); }
+TPixel color_red(int alpha = 0xFF) { return tigrRGBA(0xFF, 0, 0, alpha); }
+TPixel color_green(int alpha = 0xFF) { return tigrRGBA(0, 0xFF, 0, alpha); }
+TPixel color_blue(int alpha = 0xFF) { return tigrRGBA(0, 0, 0xFF, alpha); }
