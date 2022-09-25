@@ -32,11 +32,18 @@ int min(int a, int b) { return a < b ? a : b; }
 int max(int a, int b) { return a > b ? a : b; }
 float min(float a, float b) { return a < b ? a : b; }
 float max(float a, float b) { return a > b ? a : b; }
+v2 min(v2 a, v2 b) { return v2(min(a.x, b.y), min(a.y, b.y)); }
+v2 max(v2 a, v2 b) { return v2(max(a.x, b.y), max(a.y, b.y)); }
 float abs(float a) { return a < 0 ? -a : a; }
 v2 abs(v2 a) { return v2(abs(a.x), abs(a.y)); }
 float approach(float t, float target, float delta) { return t < target ? min(t + delta, target) : max(t - delta, target); }
 float map(float t, float lo, float hi, float old_lo = 0, float old_hi = 1) { return lo + ((t - old_lo) / (old_hi - old_lo)) * (hi - lo); }
 float smoothstep(float x) { return x * x * (3.0f - 2.0f * x); }
+float ease_out_sin(float x) { return sinf((x * 3.14159265f) * 0.5f); }
+float ease_in_sin(float x) { return 1.0f - cosf((x * 3.14159265f) * 0.5f); }
+float ease_in_quart(float x) { return x * x * x * x; }
+float ease_out_quart(float x) { return 1.0f - ease_in_quart(1.0f - x); }
+float sign(float x) { return x >= 0 ? 1.0f : -1.0f; }
 
 float shortest_arc(v2 a, v2 b)
 {
