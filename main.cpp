@@ -95,7 +95,7 @@ int main()
 
 	while (!tigrClosed(screen) && !tigrKeyDown(screen, TK_ESCAPE)) {
 		float dt = tigrTime();
-		if (tigrKeyHeld(screen, TK_CONTROL) && tigrKeyDown(screen, TK_F5)) {
+		if (tigrKeyHeld(screen, TK_CONTROL) && (tigrKeyDown(screen, TK_F5) || tigrKeyDown(screen, 'R'))) {
 			system("build.cmd");
 		}else if (reload_dll_if_needed()) {
 			game_hotload(&state);

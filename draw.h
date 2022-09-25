@@ -57,6 +57,12 @@ void draw_circle(circle c, TPixel color)
 	tigrCircle(screen, (int)c.p.x, (int)c.p.y, (int)c.r, color);
 }
 
+void draw_circle_fill(circle c, TPixel color)
+{
+	c.p = world_to_screen(c.p);
+	tigrFillCircle(screen, (int)c.p.x, (int)c.p.y, (int)c.r, color);
+}
+
 void draw_vector(v2 p, v2 v, TPixel color)
 {
 	v2 arrow[] = {

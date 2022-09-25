@@ -25,6 +25,7 @@ float det2(v2 a, v2 b) { return a.x * b.y - a.y * b.x; }
 float len(v2 v) { return sqrtf(dot(v, v)); }
 float len_squared(v2 v) { return dot(v, v); }
 v2 norm(v2 v) { float l = len(v); return v * (1.0f / l); }
+v2 safe_norm(v2 v) { float l = len(v); return l == 0 ? v2(0,0) : v * (1.0f / l); }
 v2 skew(v2 v) { return v2(-v.y, v.x); }
 
 int min(int a, int b) { return a < b ? a : b; }
@@ -33,6 +34,9 @@ float min(float a, float b) { return a < b ? a : b; }
 float max(float a, float b) { return a > b ? a : b; }
 float abs(float a) { return a < 0 ? -a : a; }
 v2 abs(v2 a) { return v2(abs(a.x), abs(a.y)); }
+float approach(float t, float target, float delta) { return t < target ? min(t + delta, target) : max(t - delta, target); }
+float map(float t, float lo, float hi, float old_lo = 0, float old_hi = 1) { return lo + ((t - old_lo) / (old_hi - old_lo)) * (hi - lo); }
+float smoothstep(float x) { return x * x * (3.0f - 2.0f * x); }
 
 float shortest_arc(v2 a, v2 b)
 {
@@ -136,6 +140,7 @@ struct aabb
 {
 	aabb() { }
 	aabb(v2 min, v2 max) { this->min = min; this->max = max; }
+	aabb(v2 p, float w, float h) { min = p - v2(w, h); max = p + v2(w, h); }
 	v2 min;
 	v2 max;
 };
@@ -143,6 +148,10 @@ struct aabb
 float width(aabb box) { return box.max.x - box.min.x; }
 float height(aabb box) { return box.max.y - box.min.y; }
 v2 center(aabb box) { return (box.min + box.max) * 0.5f; }
+v2 top(aabb box) { return v2((box.min.x + box.max.x) * 0.5f, box.max.y); }
+v2 bottom(aabb box) { return v2((box.min.x + box.max.x) * 0.5f, box.min.y); }
+v2 left(aabb box) { return v2(box.min.x, (box.min.y + box.max.y) * 0.5f); }
+v2 right(aabb box) { return v2(box.max.x, (box.min.y + box.max.y) * 0.5f); }
 
 struct circle
 {
