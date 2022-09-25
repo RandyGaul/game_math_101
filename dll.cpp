@@ -40,6 +40,7 @@ struct player_ship
 	v2 p;
 	aabb bounds;
 	Coroutine co;
+	bool firing_laser;
 	rocket_barn rockets;
 
 	void reset();
@@ -155,6 +156,7 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 {
 	tigrClear(screen, color_black());
 
+	// Player movement.
 	v2 dir = v2(0,0);
 	if (tigrKeyHeld(screen, 'A')) {
 		dir += v2(-1,0);
@@ -168,11 +170,10 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	if (tigrKeyHeld(screen, 'S')) {
 		dir += v2(0,-1);
 	}
-	g->player.p += safe_norm(dir) * 100.0f * dt;
+	g->player.p += safe_norm(dir) * (g->player.firing_laser ? 100.0f : 200.0f) * dt;
 	g->player.bounds = aabb(g->player.p, 10, 20);
 
-	draw_box(g->player.bounds, color_white());
-
+	// Fire laser.
 	co_begin(g->player.co, dt);
 	co_for(1.0f)
 	{
@@ -185,24 +186,31 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	}
 	co_while(tigrKeyHeld(screen, 'N'))
 	{
+		g->player.firing_laser = true;
 		v2 p = top(g->player.bounds) + v2(0, 10.0f);
 		ray r = ray(p + v2(0,8), v2(0,1), 500);
 		draw_line(r.p, r.endpoint(), color_white());
 		static float t = 0;
 		draw_circle_fill(circle(p, flicker(&t, dt, 0.05f, 5.0f, 6.0f)), color_white());
 	}
-	co_wait(1.0f);
+	co_wait(1.0f) // 1 second cooldown.
+	{
+		g->player.firing_laser = false;
+	}
 	co_restart();
 	co_end();
 
+	// Fire rockets.
 	if (tigrKeyDown(screen, 'M') && !tigrKeyHeld(screen, 'N')) {
 		g->player.rockets.add(g->player.p, v2(g->player.p.x, 200), 1.5f);
 	}
-
 	g->player.rockets.update(dt);
 	g->player.rockets.draw();
 	v2 rocket_hit;
 	while (g->player.rockets.try_pop_hit(&rocket_hit)) {
 		g->player.rockets.count--;
 	}
+
+	// Draw player.
+	draw_box(g->player.bounds, color_white());
 }
