@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 // Original implementation from Noel Berry.
+// This header implements coroutines in C using a switch statement hidden inside macros.
+// It's used to implement Finite State Machines (FSM).
 
 struct Coroutine
 {
@@ -31,7 +33,35 @@ inline uint64_t constexpr co_fnv1a(const char* name)
 	return h;
 }
 
+// -------------------------------------------------------------------------------------------------
+// The following macros can only be used as blocks.
+// A block means like a state in a coroutine, and has a scope { }.
+// You can not nest blocks together.
+//
+// Example:
+// 
+//     co_begin(my_co, dt)
+//     {
+//         // Block 1...
+//     }
+//     co_step()
+//     {
+//         // Block 2...
+//     }
+//     co_for(1.0f)
+//     {
+//         // Block 3...
+//     }
+//     co_step(); // Empty block 4.
+//     co_step()
+//     {
+//         co_restart();
+//     }
+//     co_end(); // Can not have a block here.
+// 
+
 // Begins the coroutine.
+// Can have it's own block.
 #define co_begin(coroutine, dt)                                              \
     do {                                                                     \
         Coroutine& __co = coroutine;                                         \
@@ -94,8 +124,12 @@ inline uint64_t constexpr co_fnv1a(const char* name)
 #define co_end()                                                             \
         } if (__mn) __co.at = -1;                                            \
         break;                                                               \
-        }                                                                    \
-    } while (0); __co_end:                                                   \
+        } __co_end:;                                                         \
+    } while (0);                                                             \
+
+// -------------------------------------------------------------------------------------------------
+// These macros can be used anywhere in a coroutine, not just as blocks. Call
+// them like normal functions.
 
 // Repeats the block of code this is placed within.
 // Skips the rest of the block.
@@ -119,5 +153,10 @@ inline uint64_t constexpr co_fnv1a(const char* name)
             __co.repeat_for_t = 0;                                           \
             goto __co_end;                                                   \
         } while (0)                                                          \
+
+// When this block finishes and a new block is entered, the new block will
+// immediately execute without waiting for the next frame.
+#define co_no_frame_delay()                                                  \
+        do { __mn = true; } while(0)                                         \
 
 #endif // COROUTINE_H

@@ -47,7 +47,7 @@ struct bullet_barn
 	void draw();
 };
 
-#define ASTEROIDS_MAX 128
+#define ASTEROIDS_MAX 256
 
 struct asteroid_barn
 {
@@ -69,14 +69,17 @@ struct player_ship
 {
 	v2 p;
 	aabb bounds;
-	Coroutine co;
-	bool firing_laser;
+	Coroutine co_movement;
+	Coroutine co_weapons;
+	bool charging_laser;
+	bool fired_laser;
 	bool firing_rockets;
 	bool shielding;
 	bool firing_bullet;
 	float shield_time;
 	rocket_barn rockets;
 	bullet_barn bullets;
+	ray laser_trail;
 
 	void reset();
 };
@@ -111,6 +114,8 @@ bool rocket_barn::add(v2 start, v2 end, float duration)
 	}
 	return false;
 }
+
+const float player_shield_max = 3.0f;
 
 void player_ship::reset()
 {
@@ -214,6 +219,7 @@ extern "C" __declspec( dllexport ) void game_init(dll_state* state)
 extern "C" __declspec( dllexport ) void game_hotload(dll_state* state)
 {
 	set_global_pointers(state);
+	memset(&g->asteroids, 0, sizeof(g->asteroids));
 	g->player.reset();
 }
 
@@ -315,16 +321,13 @@ void asteroid_barn::slice(ray r)
 		sho.back.compute_norms();
 		v2 c = center_of_mass[i];
 		v2 v = velocity[i];
-		float a = angular_velocity[i];
-		float a0 = calc_area(sho.front);
-		float a1 = calc_area(sho.back);
-		float area_weight_front = a1 / (a0 + a1);
-		float area_weight_back = a0 / (a0 + a1);
-		v2 v_front = v + v2(-50.0f * area_weight_front, 50.0f);
-		v2 v_back = v + v2(50.0f * area_weight_back, 50.0f);
+		float a = angular_velocity[i] * 2;
+		v.y = max(0.0f, v.y);
+		v2 v_front = v + v2(-50.0f, 50.0f);
+		v2 v_back = v + v2(50.0f, 50.0f);
 		alive[i] = false;
-		add(sho.front, v_front, a, 1.0f);
-		add(sho.back, v_back, a, 1.0f);
+		add(sho.front, v_front, a < 0 ? -a : a, 1.0f);
+		add(sho.back, v_back, a < 0 ? a : -a, 1.0f);
 	}
 }
 
@@ -336,31 +339,48 @@ void asteroid_barn::draw()
 	}
 }
 
-extern "C" __declspec( dllexport ) void game_loop(float dt)
+void player_movement_routine(float dt)
 {
-	tigrClear(screen, color_black());
+	co_begin(g->player.co_movement, dt)
+	{
+		if (g->player.fired_laser) {
+			co_goto("laser_knockback");
+		}
+		v2 dir = v2(0,0);
+		if (tigrKeyHeld(screen, 'A')) {
+			dir += v2(-1,0);
+		}
+		if (tigrKeyHeld(screen, 'W')) {
+			dir += v2(0,1);
+		}
+		if (tigrKeyHeld(screen, 'D')) {
+			dir += v2(1,0);
+		}
+		if (tigrKeyHeld(screen, 'S')) {
+			dir += v2(0,-1);
+		}
+		bool go_slow = g->player.charging_laser | g->player.shielding | g->player.firing_rockets;
+		g->player.p += safe_norm(dir) * (go_slow ? 100.0f : 200.0f) * dt;
+		co_restart();
+	}
+	co_label("laser_knockback")
+	{
+		co_no_frame_delay();
+		co_for(0.1f)
+		{
+			g->player.p += v2(0,-1) * 100.0f * dt;
+		}
+		co_wait(0.1f);
+		co_restart();
+	}
+	co_end();
 
-	// Player movement.
-	v2 dir = v2(0,0);
-	if (tigrKeyHeld(screen, 'A')) {
-		dir += v2(-1,0);
-	}
-	if (tigrKeyHeld(screen, 'W')) {
-		dir += v2(0,1);
-	}
-	if (tigrKeyHeld(screen, 'D')) {
-		dir += v2(1,0);
-	}
-	if (tigrKeyHeld(screen, 'S')) {
-		dir += v2(0,-1);
-	}
-	bool go_slow = g->player.firing_laser | g->player.shielding | g->player.firing_rockets;
-	g->player.p += safe_norm(dir) * (go_slow ? 100.0f : 200.0f) * dt;
 	g->player.bounds = aabb(g->player.p, 10, 20);
+}
 
-	// Player controls.
-	const float shield_max = 3.0f;
-	co_begin(g->player.co, dt);
+void player_weapons_routine(float dt)
+{
+	co_begin(g->player.co_weapons, dt);
 	{
 		if (tigrKeyHeld(screen, 'N')) {
 			co_goto("laser");
@@ -376,37 +396,45 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	}
 	co_label("laser")
 	{
-		g->player.firing_laser = true;
+		g->player.charging_laser = true;
+		// Charging laser.
 		co_for(1.0f)
 		{
 			if (tigrKeyHeld(screen, 'N')) {
 				v2 p = top(g->player.bounds) + v2(0, 10.0f);
 				draw_circle(circle(p, map(1.0f - smoothstep(co_for_t()), 3.0f, 10.0f)), color_white());
 			} else {
-				g->player.firing_laser = false;
+				g->player.charging_laser = false;
 				co_restart();
 			}
 		}
-		co_while(tigrKeyHeld(screen, 'N'))
+		// Fire laser.
+		co_step()
 		{
 			v2 p = top(g->player.bounds) + v2(0, 10.0f);
 			ray r = ray(p + v2(0,8), v2(0,1), 500);
 			g->asteroids.slice(r);
-			draw_line(r.p, r.endpoint(), color_white());
-			static float t = 0;
-			draw_circle_fill(circle(p, flicker(&t, dt, 0.05f, 5.0f, 6.0f)), color_white());
-			static float laser_time = 0;
-			laser_time += dt;
-			if (laser_time > 3.0f) {
-				laser_time = 0;
-				co_goto("laser_cooldown");
-			}
+			g->player.laser_trail = r;
+			g->player.fired_laser = true;
 		}
-		co_label("laser_cooldown");
-		co_wait(1.0f) // 1 second cooldown.
+		// Laser Fade.
+		co_for(0.75f)
 		{
-			g->player.firing_laser = false;
+			g->player.fired_laser = false;
+			g->player.charging_laser = false;
+			ray r = g->player.laser_trail;
+			int alpha = (int)(0.5f + map(1.0f - co_for_t(), 0.4f, 1.0f) * 255.0f);
+			v2 p = r.p - v2(0,3);
+			draw_line(p, r.endpoint(), color_white(alpha));
+			draw_line(p + v2(1,0), p + v2(0,20) + v2(1,0), color_white(alpha));
+			draw_line(p - v2(1,0), p + v2(0,20) - v2(1,0), color_white(alpha));
+			draw_line(p + v2(2,0), p + v2(0,8) + v2(2,0), color_white(alpha));
+			draw_line(p - v2(2,0), p + v2(0,8) - v2(2,0), color_white(alpha));
+			draw_line(p + v2( 3,-1), p + v2(0,3) + v2( 3,-1), color_white(alpha));
+			draw_line(p + v2(-3,-1), p + v2(0,3) + v2(-3,-1), color_white(alpha));
+			draw_circle_fill(circle(r.p - v2(0,8), 5), color_white(alpha));
 		}
+		co_step();
 		co_restart();
 	}
 	co_label("bullet")
@@ -433,7 +461,7 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	{
 		g->player.shielding = true;
 		g->player.shield_time += dt;
-		if (tigrKeyHeld(screen, 'B') && g->player.shield_time < shield_max) {
+		if (tigrKeyHeld(screen, 'B') && g->player.shield_time < player_shield_max) {
 			co_repeat();
 		}
 		g->player.shield_time = 0;
@@ -442,6 +470,14 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 		co_restart();
 	}
 	co_end();
+}
+
+extern "C" __declspec( dllexport ) void game_loop(float dt)
+{
+	tigrClear(screen, color_black());
+
+	player_movement_routine(dt);
+	player_weapons_routine(dt);
 
 	// Update + draw rockets.
 	g->player.rockets.update(dt);
@@ -458,7 +494,7 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	// Draw player.
 	draw_box(g->player.bounds, color_white());
 	if (g->player.shielding) {
-		float shield_t = map(1.0f - (g->player.shield_time / shield_max), 0.4f, 1.0f);
+		float shield_t = map(1.0f - (g->player.shield_time / player_shield_max), 0.4f, 1.0f);
 		int shield_alpha = (int)(0.5f + shield_t * 255.0f);
 		static float t = 0;
 		draw_circle(circle(g->player.p, flicker(&t, dt, 0.075f, 25, 26)), color_white(shield_alpha));
@@ -467,8 +503,8 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	// Update + draw asteroids.
 	static float t = 0;
 	t += dt;
-	if (t > 3.0f) {
-		g->asteroids.add(g->player.p + v2(0,230), v2(0,-100));
+	if (t > 0.3f) {
+		g->asteroids.add(g->player.p + v2(rnd_next_range(g->rnd,-50,50),600), v2(0,-100));
 		t = 0;
 	}
 	g->asteroids.update(dt);
