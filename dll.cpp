@@ -47,6 +47,24 @@ struct bullet_barn
 	void draw();
 };
 
+#define ASTEROIDS_MAX 128
+
+struct asteroid_barn
+{
+	bool alive[ASTEROIDS_MAX];
+	float angular_velocity[ASTEROIDS_MAX];
+	v2 velocity[ASTEROIDS_MAX];
+	polygon poly[ASTEROIDS_MAX];
+	v2 center_of_mass[ASTEROIDS_MAX];
+	float slice_timeout[ASTEROIDS_MAX];
+
+	void add(v2 p, v2 v);
+	void add(polygon p, v2 v, float a, float timeout);
+	void update(float dt);
+	void slice(ray r);
+	void draw();
+};
+
 struct player_ship
 {
 	v2 p;
@@ -67,6 +85,7 @@ struct game
 {
 	rnd_t rnd;
 	player_ship player;
+	asteroid_barn asteroids;
 };
 
 game* g;
@@ -208,6 +227,115 @@ inline float flicker(float* t_ptr, float dt, float interval, float lo, float hi)
 	}
 }
 
+polygon make_asteroid_poly(v2 p0)
+{
+	polygon poly;
+	for (int i = 0; i < POLYGON_MAX_VERTS; ++i) {
+		float size = 30;
+		poly.verts[i] = rnd_next_range(v2(-size,-size), v2(size,size));
+		poly.verts[i] += p0;
+	}
+	poly.count = convex_hull(poly.verts, POLYGON_MAX_VERTS);
+	poly.compute_norms();
+	return poly;
+}
+
+void asteroid_barn::add(v2 p, v2 v)
+{
+	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
+		if (alive[i]) continue;
+		alive[i] = true;
+		angular_velocity[i] = rnd_next_range(g->rnd, 0.2f, 1.0f) * sign(rnd_next_range(g->rnd, -1,1));
+		velocity[i] = v;
+		poly[i] = make_asteroid_poly(p);
+		center_of_mass[i] = calc_center_of_mass(poly[i]);
+		slice_timeout[i] = 0;
+		return;
+	}
+}
+
+void asteroid_barn::add(polygon p, v2 v, float a, float timeout)
+{
+	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
+		if (alive[i]) continue;
+		alive[i] = true;
+		angular_velocity[i] = a;
+		velocity[i] = v;
+		poly[i] = p;
+		center_of_mass[i] = calc_center_of_mass(poly[i]);
+		slice_timeout[i] = timeout;
+		return;
+	}
+}
+
+void asteroid_barn::update(float dt)
+{
+	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
+		if (!alive[i]) continue;
+
+		// Delete tiny asteroids.
+		if (calc_area(poly[i]) < 100.0f) {
+			alive[i] = false;
+			continue;
+		}
+
+		// Integrate positions.
+		v2 delta = velocity[i] * dt;
+		for (int j = 0; j < poly[i].count; ++j) {
+			poly[i].verts[j] += delta;
+		}
+		center_of_mass[i] += delta;
+
+		// Rotate about center of mass.
+		// Integrate orientation.
+		float angular_delta = angular_velocity[i] * dt;
+		rotation r = sincos(angular_delta);
+		v2 c = center_of_mass[i];
+		for (int j = 0; j < poly[i].count; ++j) {
+			poly[i].verts[j] = mul(r, poly[i].verts[j] - c) + c;
+		}
+		poly[i].compute_norms();
+
+		if (slice_timeout[i] > 0) {
+			slice_timeout[i] = max(0.0f, slice_timeout[i] - dt);
+		}
+	}
+}
+
+void asteroid_barn::slice(ray r)
+{
+	halfspace h = halfspace(skew(r.d), r.p);
+	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
+		if (!alive[i]) continue;
+		if (slice_timeout[i] > 0) continue;
+		if (!raycast(r, poly[i])) continue;
+		sutherland_hodgman_output sho = sutherland_hodgman(h, poly[i]);
+		if (!sho.front.count | !sho.back.count) continue;
+		sho.front.compute_norms();
+		sho.back.compute_norms();
+		v2 c = center_of_mass[i];
+		v2 v = velocity[i];
+		float a = angular_velocity[i];
+		float a0 = calc_area(sho.front);
+		float a1 = calc_area(sho.back);
+		float area_weight_front = a1 / (a0 + a1);
+		float area_weight_back = a0 / (a0 + a1);
+		v2 v_front = v + v2(-50.0f * area_weight_front, 50.0f);
+		v2 v_back = v + v2(50.0f * area_weight_back, 50.0f);
+		alive[i] = false;
+		add(sho.front, v_front, a, 1.0f);
+		add(sho.back, v_back, a, 1.0f);
+	}
+}
+
+void asteroid_barn::draw()
+{
+	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
+		if (!alive[i]) continue;
+		draw_polygon(poly[i], color_white());
+	}
+}
+
 extern "C" __declspec( dllexport ) void game_loop(float dt)
 {
 	tigrClear(screen, color_black());
@@ -263,10 +391,18 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 		{
 			v2 p = top(g->player.bounds) + v2(0, 10.0f);
 			ray r = ray(p + v2(0,8), v2(0,1), 500);
+			g->asteroids.slice(r);
 			draw_line(r.p, r.endpoint(), color_white());
 			static float t = 0;
 			draw_circle_fill(circle(p, flicker(&t, dt, 0.05f, 5.0f, 6.0f)), color_white());
+			static float laser_time = 0;
+			laser_time += dt;
+			if (laser_time > 3.0f) {
+				laser_time = 0;
+				co_goto("laser_cooldown");
+			}
 		}
+		co_label("laser_cooldown");
 		co_wait(1.0f) // 1 second cooldown.
 		{
 			g->player.firing_laser = false;
@@ -327,4 +463,14 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 		static float t = 0;
 		draw_circle(circle(g->player.p, flicker(&t, dt, 0.075f, 25, 26)), color_white(shield_alpha));
 	}
+
+	// Update + draw asteroids.
+	static float t = 0;
+	t += dt;
+	if (t > 3.0f) {
+		g->asteroids.add(g->player.p + v2(0,230), v2(0,-100));
+		t = 0;
+	}
+	g->asteroids.update(dt);
+	g->asteroids.draw();
 }

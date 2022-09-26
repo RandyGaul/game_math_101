@@ -82,6 +82,16 @@ void draw_vector(v2 p, v2 v, TPixel color)
 	draw_line(p, p + v, color);
 }
 
+void draw_polygon(polygon poly, TPixel color)
+{
+	v2 a = poly.verts[poly.count - 1];
+	for (int i = 0; i < poly.count; ++i) {
+		v2 b = poly.verts[i];
+		draw_line(a, b, color);
+		a = b;
+	}
+}
+
 TPixel color_white(int alpha = 0xFF) { return tigrRGBA(0xFF, 0xFF, 0xFF, alpha); }
 TPixel color_black(int alpha = 0xFF) { return tigrRGBA(0, 0, 0, alpha); }
 TPixel color_red(int alpha = 0xFF) { return tigrRGBA(0xFF, 0, 0, alpha); }

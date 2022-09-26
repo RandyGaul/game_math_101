@@ -235,7 +235,7 @@ bool raycast(ray r, circle circ, raycast_output* out)
 	}
 }
 
-bool raycast(ray r, polygon poly, raycast_output* out)
+bool raycast(ray r, polygon poly, raycast_output* out = NULL)
 {
 	float lo = 0;
 	float hi = r.t;
@@ -251,7 +251,9 @@ bool raycast(ray r, polygon poly, raycast_output* out)
 		if (denominator == 0) {
 			// Ray direction is parallel to this poly's face plane.
 			// If the ray's start direction is outside the plane we know there's no intersection.
-			if (distance > 0) return false;
+			if (distance > 0) {
+				return false;
+			}
 		} else {
 			float t = distance / denominator;
 			if (denominator < 0) {
@@ -261,13 +263,17 @@ bool raycast(ray r, polygon poly, raycast_output* out)
 			}
 			else hi = min(hi, t); // Ray is exiting the plane.
 			bool ray_clipped_away = lo > hi;
-			if (ray_clipped_away) return false;
+			if (ray_clipped_away) {
+				return false;
+			}
 		}
 	}
 
 	if (index != ~0) {
-		out->t = lo;
-		out->n = poly.norms[index];
+		if (out) {
+			out->t = lo;
+			out->n = poly.norms[index];
+		}
 		return true;
 	} else {
 		return false;
@@ -457,6 +463,46 @@ collision_data circle_to_aabb(circle a, aabb b)
 	}
 
 	return out;
+}
+
+v2 calc_center_of_mass(polygon poly)
+{
+	v2 p0 = poly.verts[0];
+	float area_sum = 0;
+	const float inv3 = 1.0f / 3.0f;
+	v2 center_of_mass = v2(0,0);
+
+	// Triangle fan of p0, p1, and p2.
+	for (int i = 0; i < poly.count; ++i) {
+		v2 p1 = poly.verts[i];
+		v2 p2 = poly.verts[i + 1 == poly.count ? 0 : i + 1];
+
+		// Sum the area of all triangles.
+		float area_of_triangle = det2(p1 - p0, p2 - p0) * 0.5f;
+		area_sum += area_of_triangle;
+
+		// Center of mass is the area-weighted centroid.
+		// Centroid is the average of all vertices.
+		center_of_mass += (p0 + p1 + p2) * (area_of_triangle * inv3);
+	}
+
+	center_of_mass *= 1.0f / area_sum;
+	return center_of_mass;
+}
+
+float calc_area(polygon poly)
+{
+	v2 p0 = poly.verts[0];
+	float area = 0;
+
+	// Triangle fan of p0, p1, and p2.
+	for (int i = 0; i < poly.count; ++i) {
+		v2 p1 = poly.verts[i];
+		v2 p2 = poly.verts[i + 1 == poly.count ? 0 : i + 1];
+		area += det2(p1 - p0, p2 - p0) * 0.5f;
+	}
+
+	return area;
 }
 
 struct sutherland_hodgman_output
