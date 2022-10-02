@@ -46,9 +46,9 @@ void draw_box(aabb box, TPixel color)
 	float w = width(box) + 1;
 	float h = height(box) + 1;
 	draw_line(box.min, box.min + v2(w, 0), color);
-	draw_line(box.min, box.min + v2(0, h), color);
+	draw_line(box.min + v2(0,1), box.min + v2(0, h-1), color);
 	draw_line(box.max, box.max - v2(w, 0), color);
-	draw_line(box.max, box.max - v2(0, h), color);
+	draw_line(box.max - v2(0,1), box.max - v2(0, h-1), color);
 }
 
 void draw_circle(circle c, TPixel color)

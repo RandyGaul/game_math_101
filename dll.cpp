@@ -2,14 +2,46 @@
 #include "math_101.h"
 #include "draw.h"
 #include "dll.h"
-#include "coroutine.h"
+#include "routine.h"
 
 #include <stdio.h>
+#include <assert.h>
 
 malloc_fn* g_malloc;
 free_fn* g_free;
 #define ALLOC g_malloc
 #define FREE g_free
+
+inline int key_pressed(int key) { return tigrKeyDown(screen, key); }
+inline int key_down(int key) { return tigrKeyHeld(screen, key); }
+
+float g_seconds = 0;
+float g_prev_seconds = 0;
+float g_dt = 0;
+
+inline void update_time(float dt)
+{
+	g_prev_seconds = g_seconds;
+	g_seconds += dt;
+	g_dt = dt;
+}
+
+inline float delta_time()
+{
+	return g_dt;
+}
+
+inline bool on_interval(float interval)
+{
+	int prev = (int)(g_prev_seconds / interval);
+	int next = (int)(g_seconds / interval);
+	return prev < next;
+}
+
+inline bool between_interval(float interval)
+{
+	return fmodf(g_seconds, interval * 2) >= interval;
+}
 
 #define ROCKETS_MAX 16
 
@@ -20,6 +52,7 @@ struct rocket_barn
 	bool alive[ROCKETS_MAX];
 	float elapsed[ROCKETS_MAX];
 	float hang_time[ROCKETS_MAX];
+	Routine rt[ROCKETS_MAX];
 	v2 p[ROCKETS_MAX];
 	v2 c0[ROCKETS_MAX];
 	v2 c1[ROCKETS_MAX];
@@ -30,7 +63,7 @@ struct rocket_barn
 	v2 hits[ROCKETS_MAX];
 
 	bool add(v2 start, v2 end, float duration);
-	void update(float dt);
+	void update();
 	void draw();
 	bool try_pop_hit(v2* hit_out);
 };
@@ -43,7 +76,7 @@ struct bullet_barn
 	v2 p[BULLETS_MAX];
 
 	bool add();
-	void update(float dt);
+	void update();
 	void draw();
 };
 
@@ -60,8 +93,22 @@ struct asteroid_barn
 
 	void add(v2 p, v2 v);
 	void add(polygon p, v2 v, float a, float timeout);
-	void update(float dt);
+	void update();
 	void slice(ray r);
+	void draw();
+};
+
+#define TRAIL_MAX 128
+
+struct trail_barn
+{
+	bool alive[TRAIL_MAX];
+	float lifespan[TRAIL_MAX];
+	float time_left[TRAIL_MAX];
+	aabb shape[TRAIL_MAX];
+
+	void add(aabb box, float duration);
+	void update();
 	void draw();
 };
 
@@ -69,13 +116,14 @@ struct player_ship
 {
 	v2 p;
 	aabb bounds;
-	Coroutine co_movement;
-	Coroutine co_weapons;
+	Routine rt_movement;
+	Routine rt_weapons;
+	Routine rt_trail;
 	bool charging_laser;
+	int charging_shot;
 	bool fired_laser;
 	bool firing_rockets;
 	bool shielding;
-	bool firing_bullet;
 	float shield_time;
 	rocket_barn rockets;
 	bullet_barn bullets;
@@ -84,16 +132,68 @@ struct player_ship
 	void reset();
 };
 
+#define ANIMATIONS_MAX 64
+#define ANIMATION_FRAMES_MAX 8
+
 struct game
 {
 	rnd_t rnd;
 	player_ship player;
 	asteroid_barn asteroids;
+	trail_barn trails;
+	Tigr* images[ANIMATIONS_MAX][ANIMATION_FRAMES_MAX];
 };
 
 game* g;
 
 v2 rnd_next_range(v2 lo, v2 hi) { return v2(rnd_next_range(g->rnd, lo.x, hi.x), rnd_next_range(g->rnd, lo.y, hi.y)); }
+
+inline float fade(float t, float lo, float hi)
+{
+	return map(1.0f - smoothstep(t), lo, hi);
+}
+
+inline int fade_alpha(float t, float lo, float hi)
+{
+	return (int)(0.5f + map(1.0f - smoothstep(t), lo, hi) * 255.0f);
+}
+
+void trail_barn::add(aabb box, float duration)
+{
+	for (int i = 0; i < TRAIL_MAX; ++i) {
+		if (alive[i]) continue;
+		alive[i] = true;
+		shape[i] = box;
+		lifespan[i] = duration;
+		time_left[i] = duration;
+		break;
+	}
+}
+
+void trail_barn::update()
+{
+	for (int i = 0; i < TRAIL_MAX; ++i) {
+		if (!alive[i]) continue;
+		time_left[i] -= delta_time();
+		if (time_left[i] < 0) alive[i] = false;
+	}
+}
+
+void trail_barn::draw()
+{
+	for (int i = 0; i < TRAIL_MAX; ++i) {
+		if (!alive[i]) continue;
+		draw_box(shape[i], color_white(fade_alpha(1.0f - (time_left[i] / lifespan[i]), 0.4f, 1.0f)));
+	}
+}
+
+const float player_shield_max = 3.0f;
+
+void player_ship::reset()
+{
+	memset(this, 0, sizeof(*this));
+	rockets.capacity = 5;
+}
 
 bool rocket_barn::add(v2 start, v2 end, float duration)
 {
@@ -101,8 +201,9 @@ bool rocket_barn::add(v2 start, v2 end, float duration)
 	for (int i = 0; i < ROCKETS_MAX; ++i) {
 		if (!alive[i]) {
 			alive[i] = true;
-			elapsed[i] = 0;
 			hang_time[i] = duration;
+			elapsed[i] = 0;
+			rt[i] = Routine();
 			v2 d = norm(end - start);
 			p[i] = start;
 			c0[i] = (start - d * 100.0f + skew(d) * rnd_next_range(g->rnd, 25.0f, 150.0f) * sign(rnd_next_range(g->rnd, -1.0f, 1.0f)));
@@ -115,25 +216,28 @@ bool rocket_barn::add(v2 start, v2 end, float duration)
 	return false;
 }
 
-const float player_shield_max = 3.0f;
-
-void player_ship::reset()
+void rocket_barn::update()
 {
-	memset(this, 0, sizeof(*this));
-	rockets.capacity = 5;
-}
-
-void rocket_barn::update(float dt)
-{
-	prev_dt = dt;
+	prev_dt = delta_time();
 	hit_count = 0;
 	for (int i = 0; i < ROCKETS_MAX; ++i) {
 		if (!alive[i]) continue;
-		elapsed[i] += dt;
-		if (elapsed[i] > hang_time[i]) {
+		rt_begin(rt[i], delta_time());
+		rt_seconds(hang_time[i])
+		{
+			elapsed[i] = rt.elapsed;
+			if (on_interval(0.015f)) {
+				float t = elapsed[i];
+				v2 at = bezier(p[i], c0[i], c1[i], target[i], ease_in_sin(t));
+				g->trails.add(aabb(at - v2(1,1), at + v2(1,1)), 0.15f);
+			}
+		}
+		rt_once()
+		{
 			alive[i] = false;
 			hits[hit_count++] = target[i];
 		}
+		rt_end();
 	}
 }
 
@@ -141,15 +245,15 @@ void rocket_barn::draw()
 {
 	for (int i = 0; i < ROCKETS_MAX; ++i) {
 		if (!alive[i]) continue;
-		float t0 = (elapsed[i] - prev_dt * 2) / hang_time[i];
-		float t1 = (elapsed[i] - prev_dt) / hang_time[i];
-		float t = elapsed[i] / hang_time[i];
+		float t0 = (elapsed[i] - prev_dt * 2 / hang_time[i]);
+		float t1 = (elapsed[i] - prev_dt / hang_time[i]);
+		float t = elapsed[i];
 		v2 at0 = bezier(p[i], c0[i], c1[i], target[i], ease_in_sin(t0));
 		v2 at1 = bezier(p[i], c0[i], c1[i], target[i], ease_in_sin(t1));
 		v2 at = bezier(p[i], c0[i], c1[i], target[i], ease_in_sin(t));
+		draw_circle_fill(circle(at, 3), color_white());
+		draw_circle_fill(circle(at1, 4), color_white(0xBB));
 		draw_circle_fill(circle(at0, 4), color_white(0x88));
-		draw_circle_fill(circle(at1, 5), color_white(0xBB));
-		draw_circle(circle(at, 3), color_white());
 	}
 }
 
@@ -175,11 +279,11 @@ bool bullet_barn::add()
 	return false;
 }
 
-void bullet_barn::update(float dt)
+void bullet_barn::update()
 {
 	for (int i = 0; i < BULLETS_MAX; ++i) {
 		if (!alive[i]) continue;
-		p[i] += v2(0,1) * 300.0f * dt;
+		p[i] += v2(0,1) * 300.0f * delta_time();
 		if (p[i].y > 240.0f + 10.0f) {
 			alive[i] = false;
 		}
@@ -195,42 +299,10 @@ void bullet_barn::draw()
 	}
 }
 
-void set_global_pointers(dll_state* state)
+inline float flicker(float interval, float lo, float hi)
 {
-	g_malloc = state->malloc;
-	g_free = state->free;
-	g = (game*)state->context;
-	screen = state->tigr;
-}
-
-extern "C" __declspec( dllexport ) void game_init(dll_state* state)
-{
-	g_malloc = state->malloc;
-	g_free = state->free;
-	g = (game*)ALLOC(sizeof(game));
-	memset(g, 0, sizeof(game));
-	state->context = g;
-	set_global_pointers(state);
-
-	g->rnd = rnd_seed(0);
-	g->player.reset();
-}
-
-extern "C" __declspec( dllexport ) void game_hotload(dll_state* state)
-{
-	set_global_pointers(state);
-	memset(&g->asteroids, 0, sizeof(g->asteroids));
-	g->player.reset();
-}
-
-inline float flicker(float* t_ptr, float dt, float interval, float lo, float hi)
-{
-	float t = *t_ptr += dt;
-	if (t < interval) return lo;
-	else {
-		if (t > interval * 2.0f) *t_ptr = 0;
-		return hi;
-	}
+	if (between_interval(interval)) return lo;
+	else return hi;
 }
 
 polygon make_asteroid_poly(v2 p0)
@@ -274,7 +346,7 @@ void asteroid_barn::add(polygon p, v2 v, float a, float timeout)
 	}
 }
 
-void asteroid_barn::update(float dt)
+void asteroid_barn::update()
 {
 	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -286,7 +358,7 @@ void asteroid_barn::update(float dt)
 		}
 
 		// Integrate positions.
-		v2 delta = velocity[i] * dt;
+		v2 delta = velocity[i] * delta_time();
 		for (int j = 0; j < poly[i].count; ++j) {
 			poly[i].verts[j] += delta;
 		}
@@ -294,7 +366,7 @@ void asteroid_barn::update(float dt)
 
 		// Rotate about center of mass.
 		// Integrate orientation.
-		float angular_delta = angular_velocity[i] * dt;
+		float angular_delta = angular_velocity[i] * delta_time();
 		rotation r = sincos(angular_delta);
 		v2 c = center_of_mass[i];
 		for (int j = 0; j < poly[i].count; ++j) {
@@ -303,7 +375,7 @@ void asteroid_barn::update(float dt)
 		poly[i].compute_norms();
 
 		if (slice_timeout[i] > 0) {
-			slice_timeout[i] = max(0.0f, slice_timeout[i] - dt);
+			slice_timeout[i] = max(0.0f, slice_timeout[i] - delta_time());
 		}
 	}
 }
@@ -322,9 +394,8 @@ void asteroid_barn::slice(ray r)
 		v2 c = center_of_mass[i];
 		v2 v = velocity[i];
 		float a = angular_velocity[i] * 2;
-		v.y = max(0.0f, v.y);
-		v2 v_front = v + v2(-50.0f, 50.0f);
-		v2 v_back = v + v2(50.0f, 50.0f);
+		v2 v_front = v + v2(-50.0f, 0);
+		v2 v_back = v + v2(50.0f, 0);
 		alive[i] = false;
 		add(sho.front, v_front, a < 0 ? -a : a, 1.0f);
 		add(sho.back, v_back, a < 0 ? a : -a, 1.0f);
@@ -339,148 +410,333 @@ void asteroid_barn::draw()
 	}
 }
 
-void player_movement_routine(float dt)
+void player_movement_routine()
 {
-	co_begin(g->player.co_movement, dt)
+	rt_begin(g->player.rt_movement, delta_time())
 	{
 		if (g->player.fired_laser) {
-			co_goto("laser_knockback");
+			nav_goto("laser_knockback");
 		}
 		v2 dir = v2(0,0);
-		if (tigrKeyHeld(screen, 'A')) {
+		if (key_down('A')) {
 			dir += v2(-1,0);
 		}
-		if (tigrKeyHeld(screen, 'W')) {
+		if (key_down('W')) {
 			dir += v2(0,1);
 		}
-		if (tigrKeyHeld(screen, 'D')) {
+		if (key_down('D')) {
 			dir += v2(1,0);
 		}
-		if (tigrKeyHeld(screen, 'S')) {
+		if (key_down('S')) {
 			dir += v2(0,-1);
 		}
 		bool go_slow = g->player.charging_laser | g->player.shielding | g->player.firing_rockets;
-		g->player.p += safe_norm(dir) * (go_slow ? 100.0f : 200.0f) * dt;
-		co_restart();
+		g->player.p += safe_norm(dir) * (go_slow ? 100.0f : 200.0f) * delta_time();
+		nav_restart();
 	}
-	co_label("laser_knockback")
+
+	rt_label("laser_knockback")
 	{
-		co_no_frame_delay();
-		co_for(0.1f)
-		{
-			g->player.p += v2(0,-1) * 100.0f * dt;
+		v2 offset = v2(0,-1) * 10.0f;
+		int n = 5;
+		for (int i = 0; i < n; ++i) {
+			float t = (float)i / (float)n;
+			v2 lo = lerp(t, g->player.bounds.min, g->player.bounds.min + offset);
+			v2 hi = lerp(t, g->player.bounds.max, g->player.bounds.max + offset);
+			g->trails.add(aabb(lo, hi), 0.15f);
 		}
-		co_wait(0.1f);
-		co_restart();
+		g->player.p += offset;
 	}
-	co_end();
+	rt_wait(0.25f)
+	{
+		nav_restart();
+	}
+	rt_end();
 
 	g->player.bounds = aabb(g->player.p, 10, 20);
 }
 
-void player_weapons_routine(float dt)
+void player_weapons_routine()
 {
-	co_begin(g->player.co_weapons, dt);
+	rt_begin(g->player.rt_weapons, delta_time());
 	{
-		if (tigrKeyHeld(screen, 'N')) {
-			co_goto("laser");
-		} else if (tigrKeyDown(screen, TK_SPACE)) {
-			co_goto("bullet");
-		} else if (tigrKeyDown(screen, 'M')) {
-			co_goto("rocket");
-		} else if (tigrKeyDown(screen, 'B')) {
-			co_goto("shield");
+		if (key_down('N')) {
+			nav_goto("laser");
+		} else if (key_pressed(TK_SPACE)) {
+			nav_goto("bullet");
+		} else if (key_pressed('M')) {
+			nav_goto("rocket");
+		} else if (key_pressed('B')) {
+			nav_goto("shield");
 		} else {
-			co_restart();
+			nav_restart();
 		}
 	}
-	co_label("laser")
+
+	rt_label("laser")
 	{
 		g->player.charging_laser = true;
-		// Charging laser.
-		co_for(1.0f)
-		{
-			if (tigrKeyHeld(screen, 'N')) {
-				v2 p = top(g->player.bounds) + v2(0, 10.0f);
-				draw_circle(circle(p, map(1.0f - smoothstep(co_for_t()), 3.0f, 10.0f)), color_white());
-			} else {
-				g->player.charging_laser = false;
-				co_restart();
-			}
-		}
-		// Fire laser.
-		co_step()
-		{
-			v2 p = top(g->player.bounds) + v2(0, 10.0f);
-			ray r = ray(p + v2(0,8), v2(0,1), 500);
-			g->asteroids.slice(r);
-			g->player.laser_trail = r;
-			g->player.fired_laser = true;
-		}
-		// Laser Fade.
-		co_for(0.75f)
-		{
-			g->player.fired_laser = false;
-			g->player.charging_laser = false;
-			ray r = g->player.laser_trail;
-			int alpha = (int)(0.5f + map(1.0f - co_for_t(), 0.4f, 1.0f) * 255.0f);
-			v2 p = r.p - v2(0,3);
-			draw_line(p, r.endpoint(), color_white(alpha));
-			draw_line(p + v2(1,0), p + v2(0,20) + v2(1,0), color_white(alpha));
-			draw_line(p - v2(1,0), p + v2(0,20) - v2(1,0), color_white(alpha));
-			draw_line(p + v2(2,0), p + v2(0,8) + v2(2,0), color_white(alpha));
-			draw_line(p - v2(2,0), p + v2(0,8) - v2(2,0), color_white(alpha));
-			draw_line(p + v2( 3,-1), p + v2(0,3) + v2( 3,-1), color_white(alpha));
-			draw_line(p + v2(-3,-1), p + v2(0,3) + v2(-3,-1), color_white(alpha));
-			draw_circle_fill(circle(r.p - v2(0,8), 5), color_white(alpha));
-		}
-		co_step();
-		co_restart();
 	}
-	co_label("bullet")
+	// Charging laser.
+	rt_seconds(1.0f)
 	{
-		g->player.firing_bullet = true;
-		g->player.bullets.add();
-		co_wait(0.05f);
-		g->player.firing_bullet = false;
-		co_restart();
+		if (key_down('N')) {
+			v2 p = top(g->player.bounds) + v2(0, 10.0f);
+			draw_circle(circle(p, fade(rt.elapsed, 3.0f, 10.0f)), color_white());
+		} else {
+			g->player.charging_laser = false;
+			nav_restart();
+		}
 	}
-	co_label("rocket")
+	// Fire laser.
+	rt_once()
+	{
+		v2 p = top(g->player.bounds) + v2(0, 10.0f);
+		ray r = ray(p + v2(0,8), v2(0,1), 500);
+		g->asteroids.slice(r);
+		g->player.laser_trail = r;
+		g->player.fired_laser = true;
+	}
+	// Laser Fade.
+	rt_seconds(0.75f)
+	{
+		g->player.fired_laser = false;
+		g->player.charging_laser = false;
+		ray r = g->player.laser_trail;
+		int alpha = fade_alpha(rt.elapsed, 0.4f, 1.0f);
+		v2 p = r.p - v2(0,3);
+		draw_line(p, r.endpoint(), color_white(alpha));
+		draw_line(p + v2(1,0), p + v2(0,20) + v2(1,0), color_white(alpha));
+		draw_line(p - v2(1,0), p + v2(0,20) - v2(1,0), color_white(alpha));
+		draw_line(p + v2(2,0), p + v2(0,8) + v2(2,0), color_white(alpha));
+		draw_line(p - v2(2,0), p + v2(0,8) - v2(2,0), color_white(alpha));
+		draw_line(p + v2( 3,-1), p + v2(0,3) + v2( 3,-1), color_white(alpha));
+		draw_line(p + v2(-3,-1), p + v2(0,3) + v2(-3,-1), color_white(alpha));
+		draw_circle_fill(circle(r.p - v2(0,8), 5), color_white(alpha));
+	}
+	rt_once()
+	{
+		nav_restart();
+	}
+
+	rt_label("bullet")
+	{
+		g->player.bullets.add();
+	}
+	rt_seconds(0.75f)
+	{
+ 		if (!key_down(TK_SPACE)) {
+			nav_restart();
+		}
+	}
+	rt_seconds(0.75f)
+	{
+		g->player.charging_shot = 1;
+ 		if (!key_down(TK_SPACE)) {
+			nav_goto("bullet_cooldown");
+		}
+	}
+	rt_seconds(key_down(TK_SPACE))
+	{
+		g->player.charging_shot = 2;
+		if (key_down(TK_SPACE)) nav_redo();
+		else {
+			// Do charge shot.
+			nav_restart();
+		}
+	}
+
+	rt_label("bullet_cooldown") { }
+	rt_wait(0.05f)
+	{
+		nav_restart();
+	}
+
+	rt_label("rocket")
 	{
 		g->player.firing_rockets = true;
+	}
+	rt_wait(0.1f)
+	{
 		g->player.rockets.add(g->player.p, v2(g->player.p.x, 200), 1.5f);
-		co_wait(0.1f);
 		if (g->player.rockets.count < g->player.rockets.capacity) {
-			co_goto("rocket");
+			nav_redo();
 		}
 		g->player.firing_rockets = false;
-		co_wait(1.0f);
-		co_restart();
 	}
-	co_label("shield")
+	rt_wait(1.0f)
+	{
+		nav_restart();
+	}
+
+	rt_label("shield")
 	{
 		g->player.shielding = true;
-		g->player.shield_time += dt;
-		if (tigrKeyHeld(screen, 'B') && g->player.shield_time < player_shield_max) {
-			co_repeat();
+		g->player.shield_time += delta_time();
+		if (key_down('B') && g->player.shield_time < player_shield_max) {
+			nav_redo();
 		}
 		g->player.shield_time = 0;
 		g->player.shielding = false;
-		co_wait(0.5f);
-		co_restart();
 	}
-	co_end();
+	rt_wait(0.5f)
+	{
+		nav_restart();
+	}
+	rt_end();
+}
+
+// name - Name of the sprite.
+// count - Number of images in the animations.
+// ... - Array of floats for frame durations in seconds.
+#define REGISTER_SPRITE(name, count, ...)                \
+	{                                                    \
+		name,                                            \
+		fnv1a(name),                                     \
+		Routine(),                                       \
+		count,                                           \
+		[](Tigr** images) {                              \
+			char buf[256];                               \
+			static_assert(count <= ANIMATION_FRAMES_MAX, "When using REGISTER_SPRITE count must be <= ANIMATION_FRAMES_MAX."); \
+			for (int i = 0; i < count; ++i) {            \
+				sprintf(buf, "%s%d.png", name, i + 1);   \
+				images[i] = tigrLoadImage(buf);          \
+			}                                            \
+		},                                               \
+		__VA_ARGS__, /* The frame durations. */          \
+	}                                                    \
+
+
+struct SpriteDef
+{
+	const char* name;
+	uint64_t hash;
+	Routine co;
+	int image_count;
+	void (*load)(Tigr**);
+	float durations[64];
+	inline void play(const char* state_name) { nav_next(co, state_name); }
+};
+
+SpriteDef sprite_defs[] = {
+	REGISTER_SPRITE(
+		"explosion",
+		4,
+		{ 0.1f, 0.1f, 0.1f, 0.1f }
+	),
+	REGISTER_SPRITE(
+		"charge",
+		2,
+		{ 0.1f }
+	),
+};
+
+void load_all_sprites()
+{
+	for (int i = 0; i < sizeof(sprite_defs) / sizeof(*sprite_defs); ++i) {
+		sprite_defs[i].load(g->images[i]);
+	}
+}
+
+struct Sprite
+{
+	Sprite() { }
+	Sprite(const char* name) { set(name); }
+
+	SpriteDef* def = NULL;
+	v2 p = v2(0,0);
+	float time = 0;
+	bool loop = false;
+	int frame = 0;
+	Tigr** images = NULL;
+
+	inline void set(const char* name)
+	{
+		*this = Sprite();
+		uint64_t h = fnv1a(name);
+		for (int i = 0; i < sizeof(sprite_defs) / sizeof(*sprite_defs); ++i) {
+			if (h == sprite_defs[i].hash) {
+				def = sprite_defs + i;
+				images = g->images[i];
+			}
+		}
+	}
+
+	inline bool valid()
+	{
+		if (!def) return false;
+		if (frame == -1) return false;
+		return true;
+	}
+
+	inline void update()
+	{
+		if (!valid()) return;
+		float dt = delta_time();
+		time += dt;
+		if (time > def->durations[frame]) {
+			frame++;
+			if (frame == def->image_count) {
+				if (loop) frame = 0;
+				else frame = -1;
+			}
+		}
+	}
+
+	inline void draw()
+	{
+		if (!valid()) return;
+		v2 pos = world_to_screen(p);
+		int w = (int)(0.5f + images[frame]->w / 2.0f);
+		int h = (int)(0.5f + images[frame]->h / 2.0f);
+		tigrBlitAlpha(screen, images[frame], (int)(pos.x - w), (int)(pos.y - h), 0, 0, (int)(w*2), (int)(h*2), 1.0f);
+	}
+};
+
+void set_global_pointers(dll_state* state)
+{
+	g_malloc = state->malloc;
+	g_free = state->free;
+	g = (game*)state->context;
+	screen = state->tigr;
+}
+
+extern "C" __declspec( dllexport ) void game_init(dll_state* state)
+{
+	g_malloc = state->malloc;
+	g_free = state->free;
+	g = (game*)ALLOC(sizeof(game));
+	memset(g, 0, sizeof(game));
+	state->context = g;
+	set_global_pointers(state);
+
+	g->rnd = rnd_seed(0);
+	g->player.reset();
+	load_all_sprites();
+}
+
+extern "C" __declspec( dllexport ) void game_hotload(dll_state* state)
+{
+	set_global_pointers(state);
+	memset(&g->asteroids, 0, sizeof(g->asteroids));
+	g->player.reset();
 }
 
 extern "C" __declspec( dllexport ) void game_loop(float dt)
 {
+	update_time(dt);
+
 	tigrClear(screen, color_black());
 
-	player_movement_routine(dt);
-	player_weapons_routine(dt);
+	static Sprite s = Sprite("explosion");
+	s.update();
+	s.draw();
+
+	player_movement_routine();
+	player_weapons_routine();
 
 	// Update + draw rockets.
-	g->player.rockets.update(dt);
+	g->player.rockets.update();
 	g->player.rockets.draw();
 	v2 rocket_hit;
 	while (g->player.rockets.try_pop_hit(&rocket_hit)) {
@@ -488,25 +744,44 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	}
 
 	// Update + draw bullets.
-	g->player.bullets.update(dt);
+	g->player.bullets.update();
 	g->player.bullets.draw();
 
 	// Draw player.
-	draw_box(g->player.bounds, color_white());
+	draw_box(g->player.bounds, color_white(0xAA));
 	if (g->player.shielding) {
 		float shield_t = map(1.0f - (g->player.shield_time / player_shield_max), 0.4f, 1.0f);
 		int shield_alpha = (int)(0.5f + shield_t * 255.0f);
-		static float t = 0;
-		draw_circle(circle(g->player.p, flicker(&t, dt, 0.075f, 25, 26)), color_white(shield_alpha));
+		draw_circle(circle(g->player.p, flicker(0.075f, 25, 26)), color_white(shield_alpha));
 	}
 
 	// Update + draw asteroids.
-	static float t = 0;
-	t += dt;
-	if (t > 0.3f) {
+	if (on_interval(0.3f)) {
 		g->asteroids.add(g->player.p + v2(rnd_next_range(g->rnd,-50,50),600), v2(0,-100));
-		t = 0;
 	}
-	g->asteroids.update(dt);
+	g->asteroids.update();
 	g->asteroids.draw();
+
+	// Update + draw trails.
+	g->trails.update();
+	g->trails.draw();
+
+	// Megaman buster for normal shot.
+	// 3 stage (no charge, charged, max charged). 3rd stage has faster bullet speed + minor
+	// knockback (on player when shot & against enemy on hit) + brief stun-shock (enemy).
+
+	// Shield toggle.
+
+	// Boss 1: shield (rotates)
+	// --> beat normally w/ timing, stun with charge shot and spam minis, no stun lock
+	// 3 max shots + barrage worth of hp.
+	// 
+	// Boss 2: laser (asteroids in between)
+	// --> beat w/ shield reflect
+	// 
+	// Boss 3: missiles (hides behind asteroids/cover)
+	// --> beat w/ laser penetration
+	// 
+	// Boss 4 (final?): fast + side-dash
+	// --> beat w/ missile curve & AoE
 }

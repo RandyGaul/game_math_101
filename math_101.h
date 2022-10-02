@@ -44,6 +44,8 @@ float ease_in_sin(float x) { return 1.0f - cosf((x * 3.14159265f) * 0.5f); }
 float ease_in_quart(float x) { return x * x * x * x; }
 float ease_out_quart(float x) { return 1.0f - ease_in_quart(1.0f - x); }
 float sign(float x) { return x >= 0 ? 1.0f : -1.0f; }
+float lerp(float t, float a, float b) { return a + t * (b - a); }
+v2 lerp(float t, v2 a, v2 b) { return v2(lerp(t, a.x, b.x), lerp(t, a.y, b.y)); }
 
 float shortest_arc(v2 a, v2 b)
 {
@@ -657,3 +659,14 @@ int      rnd_next_range(rnd_t& rnd, int min, int max) { return rnd_next_range_in
 uint64_t rnd_next_range(rnd_t& rnd, uint64_t min, uint64_t max) { return rnd_next_range_uint64(&rnd, min, max); }
 float    rnd_next_range(rnd_t& rnd, float min, float max) { return rnd_next_range_float(&rnd, min, max); }
 double   rnd_next_range(rnd_t& rnd, double min, double max) { return rnd_next_range_double(&rnd, min, max); }
+
+inline uint64_t constexpr fnv1a(const char* name)
+{
+	uint64_t h = 14695981039346656037ULL;
+	char c = 0;
+	while ((c = *name++)) {
+		h = h ^ (uint64_t)c;
+		h = h * 1099511628211ULL;
+	}
+	return h;
+}
