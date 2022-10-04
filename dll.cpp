@@ -45,7 +45,7 @@ inline bool between_interval(float interval)
 
 #define ROCKETS_MAX 16
 
-struct rocket_barn
+struct RocketBarn
 {
 	int count;
 	int capacity;
@@ -70,7 +70,7 @@ struct rocket_barn
 
 #define BULLETS_MAX 16
 
-struct bullet_barn
+struct BulletBarn
 {
 	bool alive[BULLETS_MAX];
 	v2 p[BULLETS_MAX];
@@ -82,7 +82,7 @@ struct bullet_barn
 
 #define ASTEROIDS_MAX 256
 
-struct asteroid_barn
+struct AsteroidBarn
 {
 	bool alive[ASTEROIDS_MAX];
 	float angular_velocity[ASTEROIDS_MAX];
@@ -100,7 +100,7 @@ struct asteroid_barn
 
 #define TRAIL_MAX 128
 
-struct trail_barn
+struct TrailBarn
 {
 	bool alive[TRAIL_MAX];
 	float lifespan[TRAIL_MAX];
@@ -112,7 +112,38 @@ struct trail_barn
 	void draw();
 };
 
-struct player_ship
+struct SpriteDef
+{
+	const char* name;
+	uint64_t hash;
+	Routine co;
+	int image_count;
+	void (*load)(Tigr**);
+	float durations[64];
+	inline void play(const char* state_name) { nav_next(co, state_name); }
+};
+
+struct Sprite
+{
+	Sprite() { memset(this, 0, sizeof(*this)); }
+	Sprite(const char* name) { set(name); }
+
+	SpriteDef* def;
+	v2 p;
+	float time;
+	bool loop;
+	bool finished;
+	int frame;
+	Tigr** images;
+
+	void set(const char* name);
+	bool valid();
+	void update();
+	void draw(TPixel tint = tigrRGBA(0xFF,0xFF,0xFF,0xFF));
+	bool on_finished();
+};
+
+struct PlayerShip
 {
 	v2 p;
 	aabb bounds;
@@ -125,11 +156,56 @@ struct player_ship
 	bool firing_rockets;
 	bool shielding;
 	float shield_time;
-	rocket_barn rockets;
-	bullet_barn bullets;
+	RocketBarn rockets;
+	BulletBarn bullets;
 	ray laser_trail;
+	Sprite sprite;
 
 	void reset();
+};
+
+#define ANIMS_MAX 256
+
+struct AnimBarn
+{
+	bool alive[ANIMS_MAX];
+	bool fade[ANIMS_MAX];
+	float alpha[ANIMS_MAX];
+	TPixel tint[ANIMS_MAX];
+	Sprite sprite[ANIMS_MAX];
+
+	inline void add(Sprite sprite, bool fade = false, TPixel tint = tigrRGBA(0xFF,0xFF,0xFF,0xFF))
+	{
+		for (int i = 0; i < ANIMS_MAX; ++i) {
+			if (alive[i]) continue;
+			alive[i] = true;
+			this->fade[i] = fade;
+			this->alpha[i] = 1.0f;
+			this->tint[i] = tint;
+			this->sprite[i] = sprite;
+			break;
+		}
+	}
+
+	inline void update()
+	{
+		for (int i = 0; i < ANIMS_MAX; ++i) {
+			if (!alive[i]) continue;
+			sprite[i].update();
+			if (sprite[i].on_finished()) {
+				alive[i] = false;
+				continue;
+			}
+		}
+	}
+
+	inline void draw()
+	{
+		for (int i = 0; i < ANIMS_MAX; ++i) {
+			if (!alive[i]) continue;
+			sprite[i].draw(tint[i]);
+		}
+	}
 };
 
 #define ANIMATIONS_MAX 64
@@ -138,13 +214,119 @@ struct player_ship
 struct game
 {
 	rnd_t rnd;
-	player_ship player;
-	asteroid_barn asteroids;
-	trail_barn trails;
+	PlayerShip player;
+	AsteroidBarn asteroids;
+	TrailBarn trails;
+	AnimBarn anims;
 	Tigr* images[ANIMATIONS_MAX][ANIMATION_FRAMES_MAX];
 };
 
 game* g;
+
+// name - Name of the sprite.
+// count - Number of images in the animations.
+// ... - Array of floats for frame durations in seconds.
+#define REGISTER_SPRITE(name, count, ...)                  \
+	{                                                      \
+		name,                                              \
+		fnv1a(name),                                       \
+		Routine(),                                         \
+		count,                                             \
+		[](Tigr** images) {                                \
+			char buf[256];                                 \
+			static_assert(count <= ANIMATION_FRAMES_MAX, "When using REGISTER_SPRITE count must be <= ANIMATION_FRAMES_MAX."); \
+			for (int i = 0; i < count; ++i) {              \
+				sprintf(buf, "art/%s%d.png", name, i + 1); \
+				images[i] = tigrLoadImage(buf);            \
+			}                                              \
+		},                                                 \
+		__VA_ARGS__, /* The frame durations. */            \
+	}                                                      \
+
+SpriteDef sprite_defs[] = {
+	REGISTER_SPRITE(
+		"explosion",
+		5,
+		{ 0.025f, 0.025f, 0.025f, 0.05f, 0.1f }
+	),
+	REGISTER_SPRITE(
+		"charge",
+		2,
+		{ 0.1f }
+	),
+	REGISTER_SPRITE(
+		"ship",
+		2,
+		{ 0.025f, 0.025f }
+	),
+	REGISTER_SPRITE(
+		"ship_left",
+		4,
+		{ 0.025f, 0.025f, 0.025f, 0.025f }
+	),
+	REGISTER_SPRITE(
+		"ship_right",
+		4,
+		{ 0.025f, 0.025f, 0.025f, 0.025f }
+	),
+};
+
+void load_all_sprites()
+{
+	for (int i = 0; i < sizeof(sprite_defs) / sizeof(*sprite_defs); ++i) {
+		sprite_defs[i].load(g->images[i]);
+	}
+}
+
+inline void Sprite::set(const char* name)
+{
+	*this = Sprite();
+	uint64_t h = fnv1a(name);
+	for (int i = 0; i < sizeof(sprite_defs) / sizeof(*sprite_defs); ++i) {
+		if (h == sprite_defs[i].hash) {
+			def = sprite_defs + i;
+			images = g->images[i];
+		}
+	}
+}
+
+inline bool Sprite::valid()
+{
+	if (!def) return false;
+	if (frame == -1) return false;
+	return true;
+}
+
+inline void Sprite::update()
+{
+	if (!valid()) return;
+	float dt = delta_time();
+	time += dt;
+	finished = false;
+	if (time > def->durations[frame]) {
+		time = 0;
+		frame++;
+		if (frame == def->image_count) {
+			if (loop) frame = 0;
+			else frame = -1;
+			finished = true;
+		}
+	}
+}
+
+inline void Sprite::draw(TPixel tint)
+{
+	if (!valid()) return;
+	v2 pos = world_to_screen(p);
+	int w = (int)(0.5f + images[frame]->w / 2.0f);
+	int h = (int)(0.5f + images[frame]->h / 2.0f);
+	tigrBlitTint(screen, images[frame], (int)(pos.x - w), (int)(pos.y - h), 0, 0, (int)(w*2), (int)(h*2), tint);
+}
+
+inline bool Sprite::on_finished()
+{
+	return finished;
+}
 
 v2 rnd_next_range(v2 lo, v2 hi) { return v2(rnd_next_range(g->rnd, lo.x, hi.x), rnd_next_range(g->rnd, lo.y, hi.y)); }
 
@@ -158,7 +340,7 @@ inline int fade_alpha(float t, float lo, float hi)
 	return (int)(0.5f + map(1.0f - smoothstep(t), lo, hi) * 255.0f);
 }
 
-void trail_barn::add(aabb box, float duration)
+void TrailBarn::add(aabb box, float duration)
 {
 	for (int i = 0; i < TRAIL_MAX; ++i) {
 		if (alive[i]) continue;
@@ -170,7 +352,7 @@ void trail_barn::add(aabb box, float duration)
 	}
 }
 
-void trail_barn::update()
+void TrailBarn::update()
 {
 	for (int i = 0; i < TRAIL_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -179,7 +361,7 @@ void trail_barn::update()
 	}
 }
 
-void trail_barn::draw()
+void TrailBarn::draw()
 {
 	for (int i = 0; i < TRAIL_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -189,13 +371,15 @@ void trail_barn::draw()
 
 const float player_shield_max = 3.0f;
 
-void player_ship::reset()
+void PlayerShip::reset()
 {
 	memset(this, 0, sizeof(*this));
 	rockets.capacity = 5;
+	sprite = Sprite("ship");
+	sprite.loop = true;
 }
 
-bool rocket_barn::add(v2 start, v2 end, float duration)
+bool RocketBarn::add(v2 start, v2 end, float duration)
 {
 	if (count >= capacity) return false;
 	for (int i = 0; i < ROCKETS_MAX; ++i) {
@@ -206,7 +390,7 @@ bool rocket_barn::add(v2 start, v2 end, float duration)
 			rt[i] = Routine();
 			v2 d = norm(end - start);
 			p[i] = start;
-			c0[i] = (start - d * 100.0f + skew(d) * rnd_next_range(g->rnd, 25.0f, 150.0f) * sign(rnd_next_range(g->rnd, -1.0f, 1.0f)));
+			c0[i] = (start - d * 150.0f + skew(d) * rnd_next_range(g->rnd, 25.0f, 250.0f) * sign(rnd_next_range(g->rnd, -1.0f, 1.0f)));
 			c1[i] = rnd_next_range((start + end) * 0.5f - v2(50,50), (start + end) * 0.5f+ v2(50,50));
 			target[i] = end;
 			++count;
@@ -216,7 +400,7 @@ bool rocket_barn::add(v2 start, v2 end, float duration)
 	return false;
 }
 
-void rocket_barn::update()
+void RocketBarn::update()
 {
 	prev_dt = delta_time();
 	hit_count = 0;
@@ -235,13 +419,16 @@ void rocket_barn::update()
 		rt_once()
 		{
 			alive[i] = false;
+			Sprite s = Sprite("explosion");
+			s.p = target[i];
+			g->anims.add(s);
 			hits[hit_count++] = target[i];
 		}
 		rt_end();
 	}
 }
 
-void rocket_barn::draw()
+void RocketBarn::draw()
 {
 	for (int i = 0; i < ROCKETS_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -257,7 +444,7 @@ void rocket_barn::draw()
 	}
 }
 
-bool rocket_barn::try_pop_hit(v2* hit_out)
+bool RocketBarn::try_pop_hit(v2* hit_out)
 {
 	if (hit_count) {
 		*hit_out = hits[--hit_count];
@@ -267,7 +454,7 @@ bool rocket_barn::try_pop_hit(v2* hit_out)
 	}
 }
 
-bool bullet_barn::add()
+bool BulletBarn::add()
 {
 	for (int i = 0; i < BULLETS_MAX; ++i) {
 		if (!alive[i]) {
@@ -279,7 +466,7 @@ bool bullet_barn::add()
 	return false;
 }
 
-void bullet_barn::update()
+void BulletBarn::update()
 {
 	for (int i = 0; i < BULLETS_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -290,7 +477,7 @@ void bullet_barn::update()
 	}
 }
 
-void bullet_barn::draw()
+void BulletBarn::draw()
 {
 	for (int i = 0; i < BULLETS_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -318,7 +505,7 @@ polygon make_asteroid_poly(v2 p0)
 	return poly;
 }
 
-void asteroid_barn::add(v2 p, v2 v)
+void AsteroidBarn::add(v2 p, v2 v)
 {
 	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
 		if (alive[i]) continue;
@@ -332,7 +519,7 @@ void asteroid_barn::add(v2 p, v2 v)
 	}
 }
 
-void asteroid_barn::add(polygon p, v2 v, float a, float timeout)
+void AsteroidBarn::add(polygon p, v2 v, float a, float timeout)
 {
 	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
 		if (alive[i]) continue;
@@ -346,7 +533,7 @@ void asteroid_barn::add(polygon p, v2 v, float a, float timeout)
 	}
 }
 
-void asteroid_barn::update()
+void AsteroidBarn::update()
 {
 	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -380,7 +567,7 @@ void asteroid_barn::update()
 	}
 }
 
-void asteroid_barn::slice(ray r)
+void AsteroidBarn::slice(ray r)
 {
 	halfspace h = halfspace(skew(r.d), r.p);
 	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
@@ -402,7 +589,7 @@ void asteroid_barn::slice(ray r)
 	}
 }
 
-void asteroid_barn::draw()
+void AsteroidBarn::draw()
 {
 	for (int i = 0; i < ASTEROIDS_MAX; ++i) {
 		if (!alive[i]) continue;
@@ -558,9 +745,10 @@ void player_weapons_routine()
 	}
 	rt_wait(0.1f)
 	{
-		g->player.rockets.add(g->player.p, v2(g->player.p.x, 200), 1.5f);
+		v2 target = v2(g->player.p.x, 200) + rnd_next_range(v2(-40,-40), v2(20,20));
+		g->player.rockets.add(g->player.p, target, 1.5f);
 		if (g->player.rockets.count < g->player.rockets.capacity) {
-			nav_redo();
+			nav_goto("rocket");
 		}
 		g->player.firing_rockets = false;
 	}
@@ -585,113 +773,6 @@ void player_weapons_routine()
 	}
 	rt_end();
 }
-
-// name - Name of the sprite.
-// count - Number of images in the animations.
-// ... - Array of floats for frame durations in seconds.
-#define REGISTER_SPRITE(name, count, ...)                \
-	{                                                    \
-		name,                                            \
-		fnv1a(name),                                     \
-		Routine(),                                       \
-		count,                                           \
-		[](Tigr** images) {                              \
-			char buf[256];                               \
-			static_assert(count <= ANIMATION_FRAMES_MAX, "When using REGISTER_SPRITE count must be <= ANIMATION_FRAMES_MAX."); \
-			for (int i = 0; i < count; ++i) {            \
-				sprintf(buf, "%s%d.png", name, i + 1);   \
-				images[i] = tigrLoadImage(buf);          \
-			}                                            \
-		},                                               \
-		__VA_ARGS__, /* The frame durations. */          \
-	}                                                    \
-
-
-struct SpriteDef
-{
-	const char* name;
-	uint64_t hash;
-	Routine co;
-	int image_count;
-	void (*load)(Tigr**);
-	float durations[64];
-	inline void play(const char* state_name) { nav_next(co, state_name); }
-};
-
-SpriteDef sprite_defs[] = {
-	REGISTER_SPRITE(
-		"explosion",
-		4,
-		{ 0.1f, 0.1f, 0.1f, 0.1f }
-	),
-	REGISTER_SPRITE(
-		"charge",
-		2,
-		{ 0.1f }
-	),
-};
-
-void load_all_sprites()
-{
-	for (int i = 0; i < sizeof(sprite_defs) / sizeof(*sprite_defs); ++i) {
-		sprite_defs[i].load(g->images[i]);
-	}
-}
-
-struct Sprite
-{
-	Sprite() { }
-	Sprite(const char* name) { set(name); }
-
-	SpriteDef* def = NULL;
-	v2 p = v2(0,0);
-	float time = 0;
-	bool loop = false;
-	int frame = 0;
-	Tigr** images = NULL;
-
-	inline void set(const char* name)
-	{
-		*this = Sprite();
-		uint64_t h = fnv1a(name);
-		for (int i = 0; i < sizeof(sprite_defs) / sizeof(*sprite_defs); ++i) {
-			if (h == sprite_defs[i].hash) {
-				def = sprite_defs + i;
-				images = g->images[i];
-			}
-		}
-	}
-
-	inline bool valid()
-	{
-		if (!def) return false;
-		if (frame == -1) return false;
-		return true;
-	}
-
-	inline void update()
-	{
-		if (!valid()) return;
-		float dt = delta_time();
-		time += dt;
-		if (time > def->durations[frame]) {
-			frame++;
-			if (frame == def->image_count) {
-				if (loop) frame = 0;
-				else frame = -1;
-			}
-		}
-	}
-
-	inline void draw()
-	{
-		if (!valid()) return;
-		v2 pos = world_to_screen(p);
-		int w = (int)(0.5f + images[frame]->w / 2.0f);
-		int h = (int)(0.5f + images[frame]->h / 2.0f);
-		tigrBlitAlpha(screen, images[frame], (int)(pos.x - w), (int)(pos.y - h), 0, 0, (int)(w*2), (int)(h*2), 1.0f);
-	}
-};
 
 void set_global_pointers(dll_state* state)
 {
@@ -728,10 +809,6 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 
 	tigrClear(screen, color_black());
 
-	static Sprite s = Sprite("explosion");
-	s.update();
-	s.draw();
-
 	player_movement_routine();
 	player_weapons_routine();
 
@@ -748,7 +825,9 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	g->player.bullets.draw();
 
 	// Draw player.
-	draw_box(g->player.bounds, color_white(0xAA));
+	g->player.sprite.p = g->player.p;
+	g->player.sprite.update();
+	g->player.sprite.draw();
 	if (g->player.shielding) {
 		float shield_t = map(1.0f - (g->player.shield_time / player_shield_max), 0.4f, 1.0f);
 		int shield_alpha = (int)(0.5f + shield_t * 255.0f);
@@ -765,6 +844,9 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 	// Update + draw trails.
 	g->trails.update();
 	g->trails.draw();
+
+	g->anims.update();
+	g->anims.draw();
 
 	// Megaman buster for normal shot.
 	// 3 stage (no charge, charged, max charged). 3rd stage has faster bullet speed + minor

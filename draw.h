@@ -3,8 +3,8 @@ Tigr* screen;
 v2 world_to_screen(v2 p)
 {
 	p.y = -p.y;
-	float half_screen_width = 640.0f / 2.0f;
-	float half_screen_height = 480.0f / 2.0f;
+	float half_screen_width = screen->w / 2.0f;
+	float half_screen_height = screen->h / 2.0f;
 	p.x += half_screen_width;
 	p.y += half_screen_height;
 	return p;
@@ -13,8 +13,8 @@ v2 world_to_screen(v2 p)
 v2 screen_to_world(int x, int y)
 {
 	v2 p = v2((float)x, (float)y);
-	float half_screen_width = 640.0f / 2.0f;
-	float half_screen_height = 480.0f / 2.0f;
+	float half_screen_width = screen->w / 2.0f;
+	float half_screen_height = screen->h / 2.0f;
 	p.x -= half_screen_width;
 	p.y -= half_screen_height;
 	p.y = -p.y;
