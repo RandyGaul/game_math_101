@@ -138,6 +138,7 @@ struct Sprite
 	SpriteDef* def;
 	v2 p;
 	float time;
+	bool paused;
 	bool loop;
 	bool animate_forwards;
 	bool animate_backwards;
@@ -170,6 +171,11 @@ struct PlayerShip
 	BulletBarn bullets;
 	ray laser_trail;
 	Sprite sprite;
+	int facing_index;
+	float booster_time;
+	float turn_time;
+	v2 dir;
+	v2 old_dir;
 
 	void reset();
 };
@@ -219,7 +225,7 @@ struct AnimBarn
 };
 
 #define ANIMATIONS_MAX 64
-#define ANIMATION_FRAMES_MAX 8
+#define ANIMATION_FRAMES_MAX 16
 
 struct game
 {
@@ -266,18 +272,7 @@ SpriteDef sprite_defs[] = {
 	),
 	REGISTER_SPRITE(
 		"ship",
-		2,
-		{ 0.025f, 0.025f }
-	),
-	REGISTER_SPRITE(
-		"ship_left",
-		4,
-		{ 0.5f, 0.5f, 0.5f, 0.5f }
-	),
-	REGISTER_SPRITE(
-		"ship_right",
-		4,
-		{ 0.025f, 0.025f, 0.025f, 0.025f }
+		14
 	),
 };
 
@@ -316,6 +311,7 @@ inline bool Sprite::valid()
 inline void Sprite::update()
 {
 	if (!valid()) return;
+	if (paused) return;
 	float dt = delta_time();
 	time += dt;
 	finished = false;
@@ -415,8 +411,8 @@ void PlayerShip::reset()
 {
 	memset(this, 0, sizeof(*this));
 	rockets.capacity = 5;
-	sprite = Sprite("ship_left", ANIMATION_DIRECTION_PINGPONG);
-	sprite.loop = true;
+	sprite = Sprite("ship");
+	facing_index = 3;
 }
 
 bool RocketBarn::add(v2 start, v2 end, float duration)
@@ -657,6 +653,26 @@ void player_movement_routine()
 		if (key_down('S')) {
 			dir += v2(0,-1);
 		}
+		g->player.old_dir = g->player.dir;
+		g->player.dir = dir;
+
+		g->player.turn_time += delta_time();
+		if (g->player.turn_time > 0.05f) {
+			g->player.turn_time = 0;
+			int target;
+			if (g->player.dir.x == 0) {
+				target = g->player.facing_index < 7 ? 3 : 10;
+			} else if (g->player.dir.x > 0) {
+				target = g->player.facing_index < 7 ? 6 : 13;
+			} else {
+				target = g->player.facing_index < 7 ? 0 : 7;
+			}
+			int diff = target - g->player.facing_index;
+			int target_sign = diff != 0 ? sign(diff) : 0;
+			g->player.facing_index = min(13, max(0, g->player.facing_index + target_sign));
+			g->player.sprite.frame = g->player.facing_index;
+		}
+
 		bool go_slow = g->player.charging_laser | g->player.shielding | g->player.firing_rockets;
 		g->player.p += safe_norm(dir) * (go_slow ? 100.0f : 200.0f) * delta_time();
 		nav_restart();
@@ -681,6 +697,17 @@ void player_movement_routine()
 	rt_end();
 
 	g->player.bounds = aabb(g->player.p, 10, 20);
+
+	g->player.booster_time += delta_time();
+	if (g->player.booster_time > 0.025f) {
+		g->player.booster_time = 0;
+		if (g->player.facing_index < 7) {
+			g->player.facing_index += 7;
+		} else {
+			g->player.facing_index -= 7;
+		}
+		g->player.sprite.frame = g->player.facing_index;
+	}
 }
 
 void player_weapons_routine()
@@ -866,7 +893,6 @@ extern "C" __declspec( dllexport ) void game_loop(float dt)
 
 	// Draw player.
 	g->player.sprite.p = g->player.p;
-	g->player.sprite.update();
 	g->player.sprite.draw();
 	if (g->player.shielding) {
 		float shield_t = map(1.0f - (g->player.shield_time / player_shield_max), 0.4f, 1.0f);

@@ -20,6 +20,8 @@ v2 operator*(v2 a, float b) { return v2(a.x * b, a.y * b); }
 v2 operator*=(v2& a, float b) { a = v2(a.x * b, a.y * b); return a; }
 v2 operator/(v2 a, float b) { return v2(a.x / b, a.y / b); }
 v2 operator/=(v2& a, float b) { a = v2(a.x / b, a.y / b); return a; }
+bool operator==(v2 a, v2 b) { return a.x == b.x && a.y == b.y; }
+bool operator!=(v2 a, v2 b) { return !(a == b); }
 float dot(v2 a, v2 b) { return a.x * b.x + a.y * b.y; }
 float det2(v2 a, v2 b) { return a.x * b.y - a.y * b.x; }
 float len(v2 v) { return sqrtf(dot(v, v)); }
@@ -44,6 +46,7 @@ float ease_in_sin(float x) { return 1.0f - cosf((x * 3.14159265f) * 0.5f); }
 float ease_in_quart(float x) { return x * x * x * x; }
 float ease_out_quart(float x) { return 1.0f - ease_in_quart(1.0f - x); }
 float sign(float x) { return x >= 0 ? 1.0f : -1.0f; }
+int sign(int x) { return x >= 0 ? 1 : -1; }
 float lerp(float t, float a, float b) { return a + t * (b - a); }
 v2 lerp(float t, v2 a, v2 b) { return v2(lerp(t, a.x, b.x), lerp(t, a.y, b.y)); }
 
