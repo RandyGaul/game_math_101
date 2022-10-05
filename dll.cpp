@@ -123,20 +123,30 @@ struct SpriteDef
 	inline void play(const char* state_name) { nav_next(co, state_name); }
 };
 
+enum AnimationDirection
+{
+	ANIMATION_DIRECTION_FORWARD,
+	ANIMATION_DIRECTION_BACKWARD,
+	ANIMATION_DIRECTION_PINGPONG,
+};
+
 struct Sprite
 {
-	Sprite() { memset(this, 0, sizeof(*this)); }
-	Sprite(const char* name) { set(name); }
+	Sprite() { memset(this, 0, sizeof(*this)); animate_forwards = true; }
+	Sprite(const char* name, AnimationDirection dir = ANIMATION_DIRECTION_FORWARD) { set(name, dir); }
 
 	SpriteDef* def;
 	v2 p;
 	float time;
 	bool loop;
+	bool animate_forwards;
+	bool animate_backwards;
+	bool animate_pingpong;
 	bool finished;
 	int frame;
 	Tigr** images;
 
-	void set(const char* name);
+	void set(const char* name, AnimationDirection dir = ANIMATION_DIRECTION_FORWARD);
 	bool valid();
 	void update();
 	void draw(TPixel tint = tigrRGBA(0xFF,0xFF,0xFF,0xFF));
@@ -262,7 +272,7 @@ SpriteDef sprite_defs[] = {
 	REGISTER_SPRITE(
 		"ship_left",
 		4,
-		{ 0.025f, 0.025f, 0.025f, 0.025f }
+		{ 0.5f, 0.5f, 0.5f, 0.5f }
 	),
 	REGISTER_SPRITE(
 		"ship_right",
@@ -278,9 +288,15 @@ void load_all_sprites()
 	}
 }
 
-inline void Sprite::set(const char* name)
+inline void Sprite::set(const char* name, AnimationDirection dir)
 {
 	*this = Sprite();
+	if (dir == ANIMATION_DIRECTION_BACKWARD) {
+		animate_forwards = false;
+		animate_backwards = true;
+	} else if (dir == ANIMATION_DIRECTION_PINGPONG) {
+		animate_pingpong = true;
+	}
 	uint64_t h = fnv1a(name);
 	for (int i = 0; i < sizeof(sprite_defs) / sizeof(*sprite_defs); ++i) {
 		if (h == sprite_defs[i].hash) {
@@ -304,13 +320,37 @@ inline void Sprite::update()
 	time += dt;
 	finished = false;
 	if (time > def->durations[frame]) {
-		time = 0;
-		frame++;
-		if (frame == def->image_count) {
-			if (loop) frame = 0;
-			else frame = -1;
-			finished = true;
+		if (animate_forwards) {
+			assert(animate_backwards == false);
+			if (frame + 1 == def->image_count) {
+				if (animate_pingpong) {
+					animate_forwards = false;
+					animate_backwards = true;
+					frame = max(0, frame - 1);
+				} else {
+					if (loop) frame = 0;
+					finished = true;
+				}
+			} else {
+				frame++;
+			}
+		} else if (animate_backwards) {
+			if (frame - 1 < 0) {
+				finished = true;
+				if (animate_pingpong) {
+					if (loop) {
+						animate_forwards = true;
+						animate_backwards = false;
+						frame = min(def->image_count - 1, frame + 1);
+					}
+				} else {
+					if (loop) frame = def->image_count - 1;
+				}
+			} else {
+				frame--;
+			}
 		}
+		if (loop && !finished) time = 0;
 	}
 }
 
@@ -375,7 +415,7 @@ void PlayerShip::reset()
 {
 	memset(this, 0, sizeof(*this));
 	rockets.capacity = 5;
-	sprite = Sprite("ship");
+	sprite = Sprite("ship_left", ANIMATION_DIRECTION_PINGPONG);
 	sprite.loop = true;
 }
 
